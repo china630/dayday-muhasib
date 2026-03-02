@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     ACCOUNTANT_POOL_SIZE: int = 10
     SESSION_COOKIE_LIFETIME_HOURS: int = 24
     
+    # Billing
+    MONTHLY_SUBSCRIPTION_FEE: float = 10.00
+    BILLING_DAY_OF_MONTH: int = 1  # Day to run monthly billing
+    
+    # Webhooks
+    MILLION_WEBHOOK_SECRET: str = "change-this-million-webhook-secret-token"
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

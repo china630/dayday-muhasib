@@ -30,6 +30,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from celery import Celery
 from celery.signals import worker_init, worker_shutdown
+from celery.schedules import crontab
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -499,11 +500,109 @@ def process_all_accountants() -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-# Optional: Celery Beat schedule for periodic processing
+@celery_app.task(name="monthly_billing")
+def monthly_billing() -> Dict[str, Any]:
+    """
+    Process monthly subscription billing for all users.
+    
+    This task:
+    - Runs on the 1st of each month (configured in beat_schedule)
+    - Deducts 10 AZN from each user's wallet
+    - Blocks users with insufficient balance
+    - Reactivates users who now have sufficient balance
+    
+    Returns:
+        Dict with billing results
+    
+    Usage:
+        # Manual trigger
+        from app.worker import monthly_billing
+        monthly_billing.delay()
+    """
+    try:
+        logger.info("🏦 Starting monthly billing task...")
+        
+        # Import here to avoid circular imports
+        from app.services.billing import BillingService
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def run_billing():
+            async with AsyncSessionLocal() as db:
+                billing_service = BillingService(db)
+                return await billing_service.process_monthly_billing()
+        
+        try:
+            result = loop.run_until_complete(run_billing())
+            
+            logger.info(
+                f"✅ Monthly billing completed: "
+                f"charged={result['users_charged']}, "
+                f"blocked={result['users_blocked']}, "
+                f"total={result['total_amount_charged']} AZN"
+            )
+            
+            return result
+        finally:
+            loop.close()
+    
+    except Exception as e:
+        logger.error(f"❌ Monthly billing error: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "users_processed": 0,
+            "users_charged": 0,
+            "users_blocked": 0,
+            "total_amount_charged": 0
+        }
+
+
+@celery_app.task(name="billing_preview")
+def billing_preview() -> Dict[str, Any]:
+    """
+    Preview monthly billing impact without actually charging users.
+    
+    Useful for administrative purposes to see what would happen if billing runs.
+    
+    Returns:
+        Dict with preview results
+    """
+    try:
+        logger.info("📊 Generating billing preview...")
+        
+        from app.services.billing import BillingService
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def run_preview():
+            async with AsyncSessionLocal() as db:
+                billing_service = BillingService(db)
+                return await billing_service.preview_billing_impact()
+        
+        try:
+            result = loop.run_until_complete(run_preview())
+            logger.info(f"✅ Billing preview generated")
+            return result
+        finally:
+            loop.close()
+    
+    except Exception as e:
+        logger.error(f"❌ Billing preview error: {e}")
+        return {"error": str(e)}
+
+
+# Celery Beat schedule for periodic processing
 celery_app.conf.beat_schedule = {
     "process-all-accountants-every-hour": {
         "task": "process_all_accountants",
         "schedule": 3600.0,  # Every hour
+    },
+    "monthly-billing-on-first-of-month": {
+        "task": "monthly_billing",
+        "schedule": crontab(day_of_month=1, hour=0, minute=0),  # 1st of month at midnight
     },
 }
 
